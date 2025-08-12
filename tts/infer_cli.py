@@ -255,24 +255,78 @@ class MegaTTS3DiTInfer():
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--input_wav', type=str)
-    parser.add_argument('--input_text', type=str)
-    parser.add_argument('--output_dir', type=str)
+    parser.add_argument('--input_wav', type=str, required=True, help='Path to input WAV file')
+    parser.add_argument('--input_text', type=str, help='Single input text to synthesize')
+    parser.add_argument('--sentence_list', type=str, help='Path to file with sentence list (format: "sentence_id sentence text")')
+    parser.add_argument('--output_dir', type=str, required=True, help='Output directory')
     parser.add_argument('--time_step', type=int, default=32, help='Inference steps of Diffusion Transformer')
     parser.add_argument('--p_w', type=float, default=1.6, help='Intelligibility Weight')
     parser.add_argument('--t_w', type=float, default=2.5, help='Similarity Weight')
     args = parser.parse_args()
-    wav_path, input_text, out_path, time_step, p_w, t_w = args.input_wav, args.input_text, args.output_dir, args.time_step, args.p_w, args.t_w
 
+    # Check that either input_text or sentence_list is provided
+    if not args.input_text and not args.sentence_list:
+        parser.error("Either --input_text or --sentence_list must be provided")
+    if args.input_text and args.sentence_list:
+        parser.error("Provide either --input_text or --sentence_list, not both")
+
+    wav_path, out_path, time_step, p_w, t_w = args.input_wav, args.output_dir, args.time_step, args.p_w, args.t_w
+
+    # Initialize inference engine
     infer_ins = MegaTTS3DiTInfer()
 
+    # Load and preprocess the input audio once
     with open(wav_path, 'rb') as file:
         file_content = file.read()
 
-    print(f"| Start processing {wav_path}+{input_text}")
+    print(f"| Preprocessing audio file {wav_path}")
     resource_context = infer_ins.preprocess(file_content, latent_file=wav_path.replace('.wav', '.npy'))
-    wav_bytes = infer_ins.forward(resource_context, input_text, time_step=time_step, p_w=p_w, t_w=t_w)
 
-    print(f"| Saving results to {out_path}/[P]{input_text[:20]}.wav")
+    # Get base name for output files
+    wav_basename = os.path.splitext(os.path.basename(wav_path))[0]
+
+    # Create output directory
     os.makedirs(out_path, exist_ok=True)
-    save_wav(wav_bytes, f'{out_path}/[P]{input_text[:20]}.wav')
+
+    # Handle single text input
+    if args.input_text:
+        input_text = args.input_text
+        print(f"| Start processing {wav_path} + {input_text}")
+        wav_bytes = infer_ins.forward(resource_context, input_text, time_step=time_step, p_w=p_w, t_w=t_w)
+        
+        output_file = f'{out_path}/{wav_basename}_[P]{input_text[:20]}.wav'
+        print(f"| Saving results to {output_file}")
+        save_wav(wav_bytes, output_file)
+
+    # Handle sentence list input
+    elif args.sentence_list:
+        print(f"| Loading sentence list from {args.sentence_list}")
+        with open(args.sentence_list, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+
+        for line_num, line in enumerate(lines, 1):
+            line = line.strip()
+            if not line or line.startswith('#'):  # Skip empty lines and comments
+                continue
+                
+            # Parse line: "sentence_id sentence text"
+            parts = line.split(' ', 1)
+            if len(parts) < 2:
+                print(f"| Warning: Skipping invalid line {line_num}: {line}")
+                continue
+                
+            sentence_id, sentence_text = parts
+            
+            print(f"| Processing sentence {sentence_id}: {sentence_text}")
+            try:
+                wav_bytes = infer_ins.forward(resource_context, sentence_text, time_step=time_step, p_w=p_w, t_w=t_w)
+                
+                output_file = f'{out_path}/{wav_basename}_{sentence_id}.wav'
+                print(f"| Saving results to {output_file}")
+                save_wav(wav_bytes, output_file)
+                
+            except Exception as e:
+                print(f"| Error processing sentence {sentence_id}: {e}")
+                continue
+
+    print("| Processing completed!")
